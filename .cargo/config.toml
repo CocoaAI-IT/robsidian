@@ -1,0 +1,6 @@
+# Use GNU target with MinGW
+[build]
+target = "x86_64-pc-windows-gnu"
+
+[target.x86_64-pc-windows-gnu]
+linker = "gcc"

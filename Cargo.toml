@@ -1,0 +1,43 @@
+[package]
+name = "robsidian"
+version = "0.1.0"
+edition = "2021"
+description = "Obsidian-like markdown note application written in Rust"
+authors = ["Robsidian Contributors"]
+
+[dependencies]
+# GUI
+eframe = "0.32"
+egui = "0.32"
+egui_extras = { version = "0.32", features = ["all_loaders"] }
+
+# Markdown
+egui_commonmark = "0.21"
+pulldown-cmark = "0.12"
+
+# File operations
+walkdir = "2"
+notify = "8"
+
+# Terminal
+portable-pty = "0.8"
+
+# Plugin (WASM)
+wasmtime = "28"
+
+# File dialogs
+rfd = "0.15"
+
+# Utilities
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "process", "sync", "io-util"] }
+directories = "5"
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+
+[profile.release]
+opt-level = 3
+lto = true

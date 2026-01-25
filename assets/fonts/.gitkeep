@@ -1,0 +1,2 @@
+# Place custom fonts here (e.g., Hack-Regular.ttf)
+# Then update src/app.rs to load them

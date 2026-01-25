@@ -1,0 +1,11 @@
+{
+  "id": "example",
+  "name": "Example Plugin",
+  "version": "0.1.0",
+  "description": "An example plugin demonstrating the Robsidian plugin API",
+  "author": "Robsidian Contributors",
+  "entry_point": "plugin.wasm",
+  "permissions": [
+    "read_vault"
+  ]
+}
