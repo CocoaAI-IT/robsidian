@@ -1,6 +1,13 @@
 //! Terminal functionality for command execution
 
+pub mod ansi;
+pub mod buffer;
+pub mod pty;
 pub mod shell;
+
+pub use ansi::AnsiParser;
+pub use buffer::{CursorPos, StyledChar, TerminalBuffer, TerminalLine};
+pub use pty::{PtyTerminal, TerminalKey};
 
 use std::process::{Command, Stdio};
 use std::io::{BufRead, BufReader};
@@ -274,6 +281,194 @@ mod dirs {
         #[cfg(not(windows))]
         {
             std::env::var("HOME").ok().map(PathBuf::from)
+        }
+    }
+}
+
+/// PTY-based terminal tab for interactive shell sessions
+pub struct PtyTerminalTab {
+    /// The PTY terminal instance
+    pub pty: PtyTerminal,
+    /// Terminal buffer for rendering
+    pub buffer: TerminalBuffer,
+    /// ANSI parser for processing output
+    pub parser: AnsiParser,
+    /// Error message if shell failed to start
+    pub error: Option<String>,
+}
+
+impl PtyTerminalTab {
+    /// Create a new PTY terminal tab with Nushell
+    pub fn new_nushell() -> Self {
+        Self::new_shell("nu")
+    }
+
+    /// Create a new PTY terminal tab with PowerShell
+    pub fn new_powershell() -> Self {
+        #[cfg(windows)]
+        {
+            Self::new_shell("pwsh")
+        }
+        #[cfg(not(windows))]
+        {
+            Self::new_shell("pwsh")
+        }
+    }
+
+    /// Create a new PTY terminal tab with the default shell
+    pub fn new_default() -> Self {
+        #[cfg(windows)]
+        {
+            Self::new_shell("cmd")
+        }
+        #[cfg(not(windows))]
+        {
+            Self::new_shell("bash")
+        }
+    }
+
+    /// Create a new PTY terminal tab with specified shell
+    pub fn new_shell(shell: &str) -> Self {
+        match PtyTerminal::new_shell(shell) {
+            Ok(pty) => {
+                let (cols, rows) = pty.size();
+                Self {
+                    pty,
+                    buffer: TerminalBuffer::new(cols, rows),
+                    parser: AnsiParser::new(),
+                    error: None,
+                }
+            }
+            Err(e) => {
+                // Return a tab with error state
+                Self {
+                    pty: PtyTerminal::new_shell("cmd").unwrap_or_else(|_| {
+                        panic!("Failed to create fallback shell")
+                    }),
+                    buffer: TerminalBuffer::new(80, 24),
+                    parser: AnsiParser::new(),
+                    error: Some(format!("Failed to start {}: {}", shell, e)),
+                }
+            }
+        }
+    }
+
+    /// Process pending output from the PTY
+    pub fn process_output(&mut self) {
+        let output = self.pty.read_output();
+        if !output.is_empty() {
+            self.parser.process(&output, &mut self.buffer);
+        }
+    }
+
+    /// Write input to the PTY
+    pub fn write(&mut self, data: &[u8]) -> anyhow::Result<()> {
+        self.pty.write(data)
+    }
+
+    /// Send a special key
+    pub fn send_key(&mut self, key: TerminalKey) -> anyhow::Result<()> {
+        self.pty.send_key(key)
+    }
+
+    /// Resize the terminal
+    pub fn resize(&mut self, cols: u16, rows: u16) -> anyhow::Result<()> {
+        self.pty.resize(cols, rows)?;
+        self.buffer.resize(cols, rows);
+        Ok(())
+    }
+
+    /// Check if the shell is still running
+    pub fn is_alive(&mut self) -> bool {
+        self.pty.is_alive()
+    }
+}
+
+/// PTY-based terminal state with multiple tabs
+pub struct PtyTerminalState {
+    /// Terminal tabs
+    pub tabs: Vec<PtyTerminalTab>,
+    /// Active tab index
+    pub active_tab: usize,
+    /// Default shell to use for new tabs
+    pub default_shell: String,
+}
+
+impl Default for PtyTerminalState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl PtyTerminalState {
+    /// Create a new PTY terminal state with one Nushell tab
+    pub fn new() -> Self {
+        Self {
+            tabs: vec![PtyTerminalTab::new_nushell()],
+            active_tab: 0,
+            default_shell: "nu".to_string(),
+        }
+    }
+
+    /// Create a new PTY terminal state with specified shell
+    pub fn with_shell(shell: &str) -> Self {
+        Self {
+            tabs: vec![PtyTerminalTab::new_shell(shell)],
+            active_tab: 0,
+            default_shell: shell.to_string(),
+        }
+    }
+
+    /// Create a new tab with the default shell
+    pub fn new_tab(&mut self) {
+        self.tabs.push(PtyTerminalTab::new_shell(&self.default_shell));
+        self.active_tab = self.tabs.len() - 1;
+    }
+
+    /// Create a new tab with specific shell
+    pub fn new_tab_with_shell(&mut self, shell: &str) {
+        self.tabs.push(PtyTerminalTab::new_shell(shell));
+        self.active_tab = self.tabs.len() - 1;
+    }
+
+    /// Close the current tab
+    pub fn close_current_tab(&mut self) {
+        if self.tabs.len() > 1 {
+            self.tabs.remove(self.active_tab);
+            if self.active_tab >= self.tabs.len() {
+                self.active_tab = self.tabs.len() - 1;
+            }
+        }
+    }
+
+    /// Get the current tab
+    pub fn current_tab(&self) -> Option<&PtyTerminalTab> {
+        self.tabs.get(self.active_tab)
+    }
+
+    /// Get the current tab mutably
+    pub fn current_tab_mut(&mut self) -> Option<&mut PtyTerminalTab> {
+        self.tabs.get_mut(self.active_tab)
+    }
+
+    /// Switch to a specific tab
+    pub fn switch_tab(&mut self, index: usize) {
+        if index < self.tabs.len() {
+            self.active_tab = index;
+        }
+    }
+
+    /// Process output for all tabs
+    pub fn process_all_output(&mut self) {
+        for tab in &mut self.tabs {
+            tab.process_output();
+        }
+    }
+
+    /// Process output for current tab only
+    pub fn process_current_output(&mut self) {
+        if let Some(tab) = self.current_tab_mut() {
+            tab.process_output();
         }
     }
 }

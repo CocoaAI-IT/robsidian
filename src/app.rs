@@ -7,8 +7,13 @@ use eframe::egui;
 
 use crate::core::{config::AppConfig, document::Document, file_system::FileTree};
 use crate::plugin::manager::PluginManager;
-use crate::terminal::TerminalState;
-use crate::ui::{editor::EditorPanel, file_tree::FileTreePanel, preview::PreviewPanel, terminal::TerminalPanel};
+use crate::terminal::{PtyTerminalState, TerminalState};
+use crate::ui::{
+    block_renderer::BlockAction,
+    editor::EditorPanel, file_tree::FileTreePanel,
+    live_preview::LivePreviewEditor, preview::PreviewPanel,
+    terminal::{PtyTerminalPanel, TerminalPanel},
+};
 
 /// View mode for the editor area
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -17,6 +22,8 @@ pub enum ViewMode {
     Editor,
     Preview,
     Split,
+    LivePreview,
+    TerminalWithTree,
 }
 
 /// Main application state
@@ -29,8 +36,10 @@ pub struct RobsidianApp {
     pub active_document: Option<PathBuf>,
     /// File tree state
     pub file_tree: FileTree,
-    /// Terminal state
+    /// Terminal state (simple command-based)
     pub terminal: TerminalState,
+    /// PTY terminal state (interactive shell)
+    pub pty_terminal: PtyTerminalState,
     /// Plugin manager
     pub plugin_manager: PluginManager,
     /// Application configuration
@@ -43,6 +52,8 @@ pub struct RobsidianApp {
     pub terminal_visible: bool,
     /// Commonmark cache for preview
     pub commonmark_cache: egui_commonmark::CommonMarkCache,
+    /// Live preview editor state
+    pub live_preview_editor: LivePreviewEditor,
 }
 
 impl RobsidianApp {
@@ -68,12 +79,14 @@ impl RobsidianApp {
             active_document: None,
             file_tree,
             terminal: TerminalState::new(),
+            pty_terminal: PtyTerminalState::new(),
             plugin_manager: PluginManager::new(),
             config,
             view_mode: ViewMode::Split,
             sidebar_visible: true,
             terminal_visible: false,
             commonmark_cache: egui_commonmark::CommonMarkCache::default(),
+            live_preview_editor: LivePreviewEditor::new(),
         }
     }
 
@@ -178,6 +191,7 @@ impl RobsidianApp {
                         ui.close();
                     }
                     ui.separator();
+                    ui.label("Editor Modes:");
                     if ui.selectable_label(self.view_mode == ViewMode::Editor, "Editor Only").clicked() {
                         self.view_mode = ViewMode::Editor;
                         ui.close();
@@ -188,6 +202,16 @@ impl RobsidianApp {
                     }
                     if ui.selectable_label(self.view_mode == ViewMode::Split, "Split View").clicked() {
                         self.view_mode = ViewMode::Split;
+                        ui.close();
+                    }
+                    if ui.selectable_label(self.view_mode == ViewMode::LivePreview, "Live Preview").clicked() {
+                        self.view_mode = ViewMode::LivePreview;
+                        ui.close();
+                    }
+                    ui.separator();
+                    ui.label("Terminal Mode:");
+                    if ui.selectable_label(self.view_mode == ViewMode::TerminalWithTree, "Terminal + File Tree").clicked() {
+                        self.view_mode = ViewMode::TerminalWithTree;
                         ui.close();
                     }
                 });
@@ -221,6 +245,26 @@ impl eframe::App for RobsidianApp {
         // Render menu bar
         self.render_menu_bar(ctx);
 
+        // Handle TerminalWithTree mode specially - it has its own layout
+        if self.view_mode == ViewMode::TerminalWithTree {
+            // Left sidebar: File tree (always visible in this mode)
+            egui::SidePanel::left("sidebar")
+                .resizable(true)
+                .default_width(250.0)
+                .min_width(150.0)
+                .show(ctx, |ui| {
+                    FileTreePanel::show(ui, self);
+                });
+
+            // Central area: PTY Terminal
+            egui::CentralPanel::default().show(ctx, |ui| {
+                PtyTerminalPanel::show(ui, &mut self.pty_terminal, ctx);
+            });
+
+            return;
+        }
+
+        // Standard modes: optional sidebar and terminal panel
         // Render sidebar with file tree
         if self.sidebar_visible {
             egui::SidePanel::left("sidebar")
@@ -272,6 +316,53 @@ impl eframe::App for RobsidianApp {
                             PreviewPanel::show(ui, self);
                         });
                     });
+                }
+                ViewMode::LivePreview => {
+                    // Live preview editor - hybrid editing mode
+                    // Get active document path first to avoid borrow issues
+                    let active_path = self.active_document.clone();
+
+                    // Take the editor out temporarily to avoid borrow conflicts
+                    let mut editor = std::mem::take(&mut self.live_preview_editor);
+
+                    let action = if let Some(path) = active_path {
+                        if let Some(doc) = self.documents.get_mut(&path) {
+                            editor.show(ui, doc)
+                        } else {
+                            None
+                        }
+                    } else {
+                        ui.centered_and_justified(|ui| {
+                            ui.label("No document open. Select a file from the sidebar.");
+                        });
+                        None
+                    };
+
+                    // Put the editor back
+                    self.live_preview_editor = editor;
+
+                    // Handle actions after all borrows are released
+                    if let Some(action) = action {
+                        match action {
+                            BlockAction::NavigateToNote(target) => {
+                                // Find and open the target note
+                                if let Some(vault) = &self.vault_path {
+                                    let target_path = vault.join(format!("{}.md", target));
+                                    if target_path.exists() {
+                                        self.open_document(target_path);
+                                    }
+                                }
+                            }
+                            BlockAction::OpenUrl(url) => {
+                                // Open URL in default browser
+                                let _ = open::that(&url);
+                            }
+                        }
+                    }
+                }
+                ViewMode::TerminalWithTree => {
+                    // Handled above, this shouldn't be reached
+                    unreachable!();
                 }
             }
         });
